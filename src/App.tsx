@@ -18,7 +18,7 @@ interface RankingEntry {
   score: number;
 }
 
-type Screen = 'START' | 'GAME' | 'RESULT';
+type Screen = 'START' | 'GAME' | 'RESULT' | 'RANKING';
 type Difficulty = 'EASY' | 'NORMAL'; // EASY: 4x4, NORMAL: 5x5
 
 // --- Constants ---
@@ -77,14 +77,23 @@ export default function App() {
   const [timeLeft, setTimeLeft] = useState(INITIAL_TIME);
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
   const [pangEffect, setPangEffect] = useState<{ x: number, y: number, id: number } | null>(null);
+  const [timeBonus, setTimeBonus] = useState(false);
   
+  const scoreRef = useRef(0);
+  const hasEndedRef = useRef(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+
+  // Sync scoreRef with score state for endGame access
+  useEffect(() => {
+    scoreRef.current = score;
+  }, [score]);
 
   // --- Game Logic ---
 
   const generateInitialBoard = useCallback(() => {
     const size = difficulty === 'EASY' ? 16 : 25;
+    hasEndedRef.current = false;
     
     // 1. Pick S-1 unique emojis
     const shuffledPool = [...EMOJI_POOL].sort(() => Math.random() - 0.5);
@@ -107,7 +116,7 @@ export default function App() {
 
   const startGame = () => {
     if (!nickname.trim()) {
-      alert('이름을 적어주세요!');
+      alert('닉네임을 적어주세요!');
       return;
     }
     setScore(0);
@@ -117,17 +126,27 @@ export default function App() {
     setScreen('GAME');
   };
 
+  const showRankings = () => {
+    const currentRankings: RankingEntry[] = JSON.parse(localStorage.getItem(RANKING_KEY) || '[]');
+    setRankings(currentRankings);
+    setScreen('RANKING');
+  };
+
   const endGame = useCallback(() => {
+    if (hasEndedRef.current) return;
+    hasEndedRef.current = true;
+
     if (timerRef.current) clearInterval(timerRef.current);
     setScreen('RESULT');
     
+    const finalScore = scoreRef.current;
     const currentRankings: RankingEntry[] = JSON.parse(localStorage.getItem(RANKING_KEY) || '[]');
-    const newRankings = [...currentRankings, { name: nickname, score }]
+    const newRankings = [...currentRankings, { name: nickname, score: finalScore }]
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
     localStorage.setItem(RANKING_KEY, JSON.stringify(newRankings));
     setRankings(newRankings);
-  }, [nickname, score]);
+  }, [nickname]);
 
   useEffect(() => {
     if (screen === 'GAME') {
@@ -162,7 +181,14 @@ export default function App() {
   };
 
   const handleCardClick = (index: number) => {
-    if (selectedIndices.length === 2 || selectedIndices.includes(index)) return;
+    if (selectedIndices.includes(index)) return;
+
+    // If 2 are already selected (waiting for timeout), clicking a 3rd one
+    // immediately clears the old selection and starts a new one.
+    if (selectedIndices.length === 2) {
+      setSelectedIndices([index]);
+      return;
+    }
 
     const newSelected = [...selectedIndices, index];
     setSelectedIndices(newSelected);
@@ -173,30 +199,23 @@ export default function App() {
         // MATCH FOUND!
         playSound('correct');
         triggerPang(first, second);
-        
-        // Update board logic:
-        // 1. Identify all unique emojis currently on board
-        // 2. Pick a new "target" emoji from the board (excluding the one we just matched)
-        // 3. Replace the two matched slots:
-        //    - One becomes the "target" emoji (creating the new pair)
-        //    - One becomes a brand new emoji from the pool (not on board)
+        setTimeLeft((prev) => prev + 5);
+        setTimeBonus(true);
+        setTimeout(() => setTimeBonus(false), 1000);
         
         setTimeout(() => {
           setCards((prev) => {
             const currentEmojisOnBoard = prev.map(c => c.emoji);
             const matchedEmoji = prev[first].emoji;
             
-            // Filter out the matched emoji to pick a new target
             const potentialTargets = currentEmojisOnBoard.filter(e => e !== matchedEmoji);
             const nextPairEmoji = potentialTargets[Math.floor(Math.random() * potentialTargets.length)];
             
-            // Find an emoji from the pool that is NOT on the board
             const pool = [...EMOJI_POOL];
             const availableInPool = pool.filter(e => !currentEmojisOnBoard.includes(e));
             const brandNewEmoji = availableInPool[Math.floor(Math.random() * availableInPool.length)];
             
             const updated = [...prev];
-            // Replace the two slots
             updated[first] = { ...updated[first], emoji: nextPairEmoji };
             updated[second] = { ...updated[second], emoji: brandNewEmoji };
             
@@ -208,9 +227,10 @@ export default function App() {
       } else {
         // WRONG PAIR
         playSound('incorrect');
+        // We still set a timeout to clear it automatically if they don't click anything else
         setTimeout(() => {
-          setSelectedIndices([]);
-        }, 400);
+          setSelectedIndices(prev => prev.length === 2 ? [] : prev);
+        }, 600);
       }
     }
   };
@@ -246,12 +266,12 @@ export default function App() {
       
       <div className="w-full max-w-xs space-y-4">
         <div className="space-y-2">
-          <label className="text-xs font-bold text-stone-400 uppercase tracking-widest">내 이름</label>
+          <label className="text-xs font-bold text-stone-400 uppercase tracking-widest">닉네임</label>
           <input
             type="text"
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
-            placeholder="이름을 적어주세요"
+            placeholder="닉네임을 적어주세요"
             maxLength={8}
             className="w-full px-4 py-3 text-xl text-center border-4 border-yellow-200 rounded-2xl focus:border-yellow-400 outline-none transition-colors font-bold text-stone-700 bg-white shadow-inner"
           />
@@ -290,6 +310,14 @@ export default function App() {
           <Play fill="currentColor" size={24} />
           게임 시작!
         </button>
+
+        <button
+          onClick={showRankings}
+          className="w-full py-3 bg-white hover:bg-stone-50 text-stone-600 font-bold text-lg rounded-2xl border-2 border-stone-100 shadow-sm transform active:scale-95 transition-all flex items-center justify-center gap-2"
+        >
+          <Trophy size={20} className="text-yellow-500" />
+          실시간 랭킹보기
+        </button>
       </div>
     </motion.div>
   );
@@ -297,11 +325,23 @@ export default function App() {
   const renderGameScreen = () => (
     <div className="w-full max-w-md mx-auto relative">
       <div className="flex justify-between items-center mb-6 px-2">
-        <div className="flex items-center gap-2 bg-red-50 px-4 py-2 rounded-full border-2 border-red-100">
+        <div className="flex items-center gap-2 bg-red-50 px-4 py-2 rounded-full border-2 border-red-100 relative">
           <Timer className="text-red-500" size={20} />
           <span className={`text-2xl font-black ${timeLeft <= 5 ? 'text-red-600 animate-pulse' : 'text-red-500'}`}>
             {timeLeft}초
           </span>
+          <AnimatePresence>
+            {timeBonus && (
+              <motion.span
+                initial={{ opacity: 0, y: 0 }}
+                animate={{ opacity: 1, y: -20 }}
+                exit={{ opacity: 0 }}
+                className="absolute right-0 -top-4 text-green-500 font-black text-lg"
+              >
+                +5s
+              </motion.span>
+            )}
+          </AnimatePresence>
         </div>
         <div className="flex flex-col items-end">
           <div className="flex items-center gap-1 text-xs font-bold text-stone-400 uppercase tracking-widest">
@@ -456,8 +496,50 @@ export default function App() {
     </motion.div>
   );
 
+  const renderRankingScreen = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="flex flex-col items-center gap-6 text-center w-full max-w-sm mx-auto"
+    >
+      <div className="space-y-1">
+        <h2 className="text-3xl font-black text-yellow-500">실시간 랭킹</h2>
+        <p className="text-stone-500 font-medium">최고의 이모지 팡! 고수는 누구?</p>
+      </div>
+
+      <div className="w-full bg-stone-50 p-6 rounded-3xl border-2 border-stone-100 text-left">
+        <div className="space-y-3">
+          {rankings.map((r, i) => (
+            <div key={i} className="flex justify-between items-center p-2 rounded-xl bg-white border border-stone-100">
+              <div className="flex items-center gap-3">
+                <span className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold ${
+                  i === 0 ? 'bg-yellow-400 text-white' : 'bg-stone-200 text-stone-600'
+                }`}>
+                  {i + 1}
+                </span>
+                <span className="font-bold text-stone-700">{r.name}</span>
+              </div>
+              <span className="font-black text-stone-500">{r.score}점</span>
+            </div>
+          ))}
+          {rankings.length === 0 && (
+            <p className="text-center text-stone-400 py-4 italic">아직 랭킹이 없어요!</p>
+          )}
+        </div>
+      </div>
+
+      <button
+        onClick={() => setScreen('START')}
+        className="w-full py-4 bg-stone-800 hover:bg-stone-900 text-white font-black text-xl rounded-2xl shadow-lg transform active:scale-95 transition-all flex items-center justify-center gap-2"
+      >
+        <RotateCcw size={24} />
+        돌아가기
+      </button>
+    </motion.div>
+  );
+
   return (
-    <div className="min-h-screen bg-[#fff9c4] flex items-center justify-center p-4 font-sans selection:bg-yellow-200 overflow-hidden">
+    <div className="min-h-screen bg-[#fff9c4] flex flex-col items-center justify-center p-4 font-sans selection:bg-yellow-200 overflow-hidden">
       <motion.div
         layout
         className="bg-white w-full max-w-md p-8 rounded-[40px] shadow-[0_20px_50px_rgba(0,0,0,0.1)] border-8 border-white"
@@ -466,7 +548,16 @@ export default function App() {
           {screen === 'START' && renderStartScreen()}
           {screen === 'GAME' && renderGameScreen()}
           {screen === 'RESULT' && renderResultScreen()}
+          {screen === 'RANKING' && renderRankingScreen()}
         </AnimatePresence>
+      </motion.div>
+      
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 0.4 }}
+        className="mt-6 text-stone-500 font-bold text-[10px] tracking-[0.2em] uppercase"
+      >
+        made by kkh
       </motion.div>
     </div>
   );
